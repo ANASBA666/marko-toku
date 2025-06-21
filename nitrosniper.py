@@ -16,71 +16,72 @@ async def healthz():
     return {"status": "ok"}
 
 # === Global config ===
-GITHUB_TOKEN = "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"  # Replace this before use
+GITHUB_TOKEN = "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"
 MAIN_TOKEN = "MTIxMDQwMjYwODA3MDc5MTIzMA.GEtAXD.nLsEWxm9IKsmFyiJY3Nlso-zO7F84oZNsRrCxQ"
 BOT_TOKEN = "MTMzNzQzMjcyMzk0MTM2MzgwNg.G5xdmo.9b5AIimcJBzl0hnzUpi7ZGCCV2JzDhZ4gXssbw"
 WEBHOOK_URL = "https://discord.com/api/webhooks/1353147680448184421/agHFeGcaxZFlh-qeXtd8m_hytFN4uUuEdu8bjSF3CH43n5JDRLczfnsc7Y8xbKWOUo6k"
 GITHUB_REPO_URL = "https://raw.githubusercontent.com/ANASBA666/marko-toku/refs/heads/main/mako.txt?token=GHSAT0AAAAAADFOPWB3SQOFQCPZYOM4P5NC2CW4LVA"
 
 REDEEM_API = "https://discord.com/api/v10/entitlements/gift-codes/{}/redeem"
-GIFT_LINK_PATTERN = re.compile(r"(?:https?:\/\/)?discord\.gift\/([a-zA-Z0-9]{16,24})")
+GIFT_LINK_PATTERN = re.compile(r"(?:https?:\\/\\/)?discord\\.gift\\/([a-zA-Z0-9]{16,24})")
 
 MONITOR_TOKENS = []
 SELF_BOTS = []
 shared_session = None
+bot_started = False
 
-# === Discord bot setup ===
 intents = discord.Intents.default()
 intents.messages = True
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# === Token headers ===
 redeem_headers = {
     "Authorization": MAIN_TOKEN,
     "Content-Type": "application/json",
     "User-Agent": "DiscordBot (https://example.com, 1.0)"
 }
 
-# === Update tokens ===
 @tasks.loop(minutes=1)
 async def update_monitor_tokens():
     global MONITOR_TOKENS, SELF_BOTS
     headers = {"Authorization": f"Bearer {GITHUB_TOKEN}"}
-    for attempt in range(3):
-        try:
-            async with shared_session.get(GITHUB_REPO_URL, headers=headers, timeout=5) as response:
-                if response.status == 429:
-                    await asyncio.sleep(int(response.headers.get("Retry-After", 1)))
-                    continue
-                response.raise_for_status()
-                new_tokens = [t.strip() for t in (await response.text()).splitlines() if t.strip()]
-                valid_tokens = []
-                for token in new_tokens:
-                    if await is_valid_token(token):
-                        valid_tokens.append(token)
-                old_tokens = set(MONITOR_TOKENS)
-                MONITOR_TOKENS = valid_tokens
-                removed_tokens = old_tokens - set(valid_tokens)
-                if removed_tokens:
-                    await send_webhook(f"Removed invalid tokens: {', '.join(removed_tokens)}")
-                new_tokens_set = set(valid_tokens) - old_tokens
-                for token in new_tokens_set:
-                    await start_self_bot(token)
-                for client in SELF_BOTS[:]:
-                    if client.token in removed_tokens:
-                        await client.close()
-                        SELF_BOTS.remove(client)
-                print(f"Updated tokens: {len(MONITOR_TOKENS)} active")
-                if MONITOR_TOKENS:
-                    await send_webhook(f"Monitoring {len(MONITOR_TOKENS)} accounts")
-                return
-        except Exception as e:
-            print(f"GitHub fetch error (attempt {attempt+1}): {e}")
-            await asyncio.sleep(2)
-    await send_webhook("Failed to fetch tokens after 3 attempts")
+    try:
+        async with shared_session.get(GITHUB_REPO_URL, headers=headers, timeout=5) as response:
+            if response.status == 429:
+                await asyncio.sleep(int(response.headers.get("Retry-After", 1)))
+            response.raise_for_status()
+            new_tokens = [t.strip() for t in (await response.text()).splitlines() if t.strip()]
+            valid_tokens = []
+            invalid_tokens = []
+            for token in new_tokens:
+                if await is_valid_token(token):
+                    valid_tokens.append(token)
+                else:
+                    invalid_tokens.append(token)
 
-# === Token validation ===
+            old_tokens = set(MONITOR_TOKENS)
+            MONITOR_TOKENS = valid_tokens
+            removed_tokens = old_tokens - set(valid_tokens)
+
+            if removed_tokens or invalid_tokens:
+                await send_webhook(f"Removed/Invalid tokens: {', '.join(removed_tokens.union(invalid_tokens))}")
+
+            new_tokens_set = set(valid_tokens) - old_tokens
+            for token in new_tokens_set:
+                await start_self_bot(token)
+
+            for client in SELF_BOTS[:]:
+                if client.token in removed_tokens:
+                    await client.close()
+                    SELF_BOTS.remove(client)
+
+            print(f"Updated tokens: {len(MONITOR_TOKENS)} active")
+            if MONITOR_TOKENS:
+                await send_webhook(f"Monitoring {len(MONITOR_TOKENS)} accounts")
+    except Exception as e:
+        print(f"GitHub fetch error: {e}")
+        await send_webhook("Failed to fetch tokens.")
+
 async def is_valid_token(token):
     headers = {"Authorization": token}
     try:
@@ -89,7 +90,6 @@ async def is_valid_token(token):
     except:
         return False
 
-# === Webhook logging ===
 async def send_webhook(message, is_success=False):
     embed = {
         "title": "Nitro Sniper",
@@ -104,7 +104,6 @@ async def send_webhook(message, is_success=False):
     except Exception as e:
         print(f"Webhook error: {e}")
 
-# === Redeem code ===
 async def redeem_gift(code):
     url = REDEEM_API.format(code)
     try:
@@ -120,7 +119,6 @@ async def redeem_gift(code):
         await send_webhook(f"Error redeeming {code}: {str(e)}")
         return False
 
-# === Self-bot listener ===
 async def start_self_bot(token):
     client = discord.Client(intents=intents)
     client.token = token
@@ -137,8 +135,8 @@ async def start_self_bot(token):
                 code = match.group(1)
                 print(f"Detected link: {code} from {message.author}")
                 await redeem_gift(code)
-        except:
-            pass
+        except Exception as e:
+            print(f"Error in on_message: {e}")
 
     for attempt in range(3):
         try:
@@ -151,7 +149,6 @@ async def start_self_bot(token):
     if client in SELF_BOTS:
         SELF_BOTS.remove(client)
 
-# === Command: stats ===
 @bot.command()
 async def stats(ctx):
     latency = round(bot.latency * 1000, 2)
@@ -171,15 +168,16 @@ async def stats(ctx):
     embed.set_footer(text="Developed by ANASBA666")
     await ctx.send(embed=embed)
 
-# === Bot ready ===
 @bot.event
 async def on_ready():
+    global bot_started
     print(f"Bot logged in as {bot.user}")
     if not update_monitor_tokens.is_running():
         update_monitor_tokens.start()
-    await send_webhook("Nitro Sniper started", is_success=True)
+        if not bot_started:
+            await send_webhook("Nitro Sniper started", is_success=True)
+            bot_started = True
 
-# === Bot runner ===
 async def main():
     global shared_session
     shared_session = aiohttp.ClientSession()
@@ -190,11 +188,9 @@ async def main():
         for client in SELF_BOTS:
             await client.close()
 
-# === FastAPI thread ===
 def run_server():
     uvicorn.run(app, host="0.0.0.0", port=8000)
 
-# === Main entry ===
 if __name__ == "__main__":
     server_thread = threading.Thread(target=run_server, daemon=True)
     server_thread.start()
